@@ -139,11 +139,20 @@ class Logger:
 
     @rank_zero_only
     def close(self) -> None:
+        # """Close the logger backend."""
+        # if self.log_type == 'tensorboard':
+        #     self.writer.close()
+        # elif self.log_type == 'wandb' and self.wandb:
+        #     self.wandb.finish()
         """Close the logger backend."""
-        if self.log_type == 'tensorboard':
-            self.writer.close()
-        elif self.log_type == 'wandb' and self.wandb:
-            self.wandb.finish()
+        try:
+            if self.log_type == 'tensorboard':
+                self.writer.close()
+            elif self.log_type == 'wandb' and self.wandb:
+                self.wandb.finish()
+        except (RuntimeError, AttributeError) as e:  # 捕获解释器关闭或属性异常
+            if "interpreter shutdown" not in str(e):  # 非解释器关闭的错误仍抛出
+                raise
 
     @staticmethod
     @tqdm.external_write_mode()

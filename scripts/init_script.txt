@@ -1,0 +1,4 @@
+conda activate aa
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+cd /root/align-anything/scripts
+python /root/align-anything/scripts/merge.py

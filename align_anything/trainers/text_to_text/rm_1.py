@@ -17,12 +17,12 @@
 
 import argparse
 import os
-import json
 import sys
 from typing import Any
+import json
+import numpy as np
 
 import deepspeed
-import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -177,6 +177,14 @@ class RMTrainer(SupervisedTrainerBase):
 
         rewards = []
         batch = None
+        all_higher_end_rewards = []
+        all_lower_end_rewards = []
+        all_higher_texts = []
+        all_lower_texts = []
+
+        all_higher_last_token_embeddings = [] # 存储 higher_texts 的最后一个 token 向量
+        all_lower_last_token_embeddings = []  # 存储 lower_texts 的最后一个 token 向量
+
         for batch in eval_dataloader:
             output = self.model(**self.infer_batch(batch))
             end_scores = output.end_scores
@@ -188,6 +196,28 @@ class RMTrainer(SupervisedTrainerBase):
             num_total_predictions += batch_size
 
             rewards.extend([higher_end_rewards, lower_end_rewards])
+            all_higher_end_rewards.extend(higher_end_rewards.cpu().tolist())
+            all_lower_end_rewards.extend(lower_end_rewards.cpu().tolist())
+
+            better_input_ids, worse_input_ids = batch['input_ids'].chunk(chunks=2, dim=0)
+            higher_texts = self.tokenizer.batch_decode(
+                better_input_ids, skip_special_tokens=True
+            )
+            lower_texts = self.tokenizer.batch_decode(
+                worse_input_ids, skip_special_tokens=True
+            )
+            all_higher_texts.extend(higher_texts)
+            all_lower_texts.extend(lower_texts)
+
+            last_hidden_state = output.last_hidden_state 
+            end_last_hidden_state = output.end_last_hidden_state
+
+            #higher_hidden_states, lower_hidden_states = last_hidden_state.chunk(chunks=2, dim=0)
+            higher_end_last_hidden_state, lower_end_last_hidden_state = end_last_hidden_state.chunk(chunks=2, dim=0)
+
+            all_higher_last_token_embeddings.extend(higher_end_last_hidden_state.cpu().tolist())
+            all_lower_last_token_embeddings.extend(lower_end_last_hidden_state.cpu().tolist())
+    
 
         if batch is None:
             self.logger.print('WARNING: `eval_dataloader` is empty.')
@@ -205,6 +235,27 @@ class RMTrainer(SupervisedTrainerBase):
         dist.gather(rewards, gathered_rewards, dst=0)
         if is_main_process():
             rewards = torch.cat(gathered_rewards, dim=0)
+
+            results = []
+            for h_reward, l_reward, h_text, l_text in zip(
+                all_higher_end_rewards, all_lower_end_rewards, all_higher_texts, all_lower_texts
+            ):
+                results.append({
+                    "higher_end_reward": h_reward,
+                    "lower_end_reward": l_reward,
+                    "higher_text": h_text,
+                    "lower_text": l_text,
+                })
+            # output_dir = "/root/align-anything/outputs/rm_visualization_5k3ep/"
+            with open("rm5k3ep_dpo30k1ep_eval_response_pairs_data.json", "w") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            self.logger.print("Saved eval_response_pairs_data.json")
+
+            higher_last_token_embeddings_np = np.array(all_higher_last_token_embeddings)
+            lower_last_token_embeddings_np = np.array(all_lower_last_token_embeddings)
+            np.save('rm5k3ep_dpo30k1ep_higher_response_last_token_embeddings.npy', higher_last_token_embeddings_np)
+            np.save('rm5k3ep_dpo30k1ep_lower_response_last_token_embeddings.npy' , lower_last_token_embeddings_np)
+            self.logger.print(f"最后一个 Token 向量已保存: higher_response_last_token_embeddings.npy (Shape: {higher_last_token_embeddings_np.shape}), lower_response_last_token_embeddings.npy (Shape: {lower_last_token_embeddings_np.shape})")
 
         self.model.train()
         if self.cfgs.train_cfgs.gradient_checkpointing:
